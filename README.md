@@ -113,7 +113,7 @@ No screenshots are bundled yet. After installing, look for the **AI Image** and 
 ## Publish
 
 ```bash
-gh repo create blu-inman/krita-agent --public --source . --push
+gh repo create moomoomoo6969/krita-agent --public --source . --push
 ```
 
 ## License
