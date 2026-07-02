@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=Krita/PythonPlugin
+X-KDE-Library=krita_image_uploader
+X-Python-2-Compatible=false
+Name=Krita Image Uploader
+Comment=Exports the active Krita canvas to a shared folder and imports queued images as layers.

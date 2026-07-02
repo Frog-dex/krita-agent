@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=Krita/PythonPlugin
+X-KDE-Library=grok_image
+X-Python-2-Compatible=false
+X-Krita-Manual=Manual.html
+Name=AI Image (Grok / Gemini / Imagen / Local)
+Comment=Multi-provider image generation. Funnels Grok, Gemini Nano Banana, Imagen 4, and local SD into Krita.
