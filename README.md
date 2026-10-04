@@ -1,5 +1,7 @@
 # krita-agent
 
+<img src="docs/box.jpg" width="260" align="right" alt="Krita Agent box art">
+
 AI + agent tooling for [Krita](https://krita.org): generate images from cloud providers directly onto the canvas, drive Krita from external scripts/agents through a file-based bridge, and build layered `.kra` files programmatically with the Inherit-Alpha (clipping mask) workflow.
 
 ## What's inside
@@ -113,8 +115,20 @@ No screenshots are bundled yet. After installing, look for the **AI Image** and 
 ## Publish
 
 ```bash
-gh repo create moomoomoo6969/krita-agent --public --source . --push
+gh repo create Frog-dex/krita-agent --public --source . --push
 ```
+
+## The Sovereign Software shelf
+
+Every box on the Spirit Strikers software shelf. Put the discs in the terminal here: https://frog-dex.github.io/terrace-world/library.html#software
+
+| <a href="https://github.com/Frog-dex/terrace-world"><img src="docs/shelf/terrace-world.jpg" width="150" alt="Terrace World box"></a> | <img src="docs/shelf/snowberry-os.jpg" width="150" alt="Snowberry OS box"> | <img src="docs/shelf/lizard-widget.jpg" width="150" alt="Lizard Widget box"> | <img src="docs/shelf/frog-widget.jpg" width="150" alt="Frog Widget box"> |
+|:--:|:--:|:--:|:--:|
+| **Terrace World**<br>the game | **Snowberry OS**<br>early build, not released yet | **Lizard Widget**<br>add-on, not released yet | **Frog Widget**<br>add-on, not released yet |
+
+| <a href="https://github.com/Frog-dex/3d-models-pack"><img src="docs/shelf/models-pack.jpg" width="150" alt="3D Models Pack box"></a> | <a href="https://github.com/Frog-dex/plan-and-code"><img src="docs/shelf/plan-and-code.jpg" width="150" alt="Plan & Code box"></a> | <a href="https://github.com/Frog-dex/krita-agent"><img src="docs/shelf/krita-agent.jpg" width="150" alt="Krita Agent box"></a> | <a href="https://github.com/Frog-dex/card-forge"><img src="docs/shelf/card-forge.jpg" width="150" alt="Card Forge box"></a> |
+|:--:|:--:|:--:|:--:|
+| **3D Models Pack**<br>thirteen free models | **Plan & Code**<br>plan a page, hand it to an AI | **Krita Agent**<br>AI tools inside Krita | **Card Forge**<br>card-making studio |
 
 ## License
 
