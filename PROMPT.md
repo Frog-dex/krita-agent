@@ -20,13 +20,18 @@ krita-agent/
 │   ├── grok_image.desktop              # Krita plugin manifest (Type=Service, ServiceTypes=Krita/PythonPlugin, X-KDE-Library=grok_image)
 │   ├── grok_image/
 │   │   ├── __init__.py                 # registers DockWidgetFactory("grokImageDocker", DockRight, GrokImageDocker)
-│   │   └── grok_image.py               # the AI Image docker (~450 lines)
+│   │   ├── grok_image.py               # the AI Image docker (Qt/Krita side)
+│   │   └── providers.py                # stdlib-only request/parse logic (unit-tested)
 │   ├── krita_image_uploader.desktop    # manifest (X-KDE-Library=krita_image_uploader)
 │   └── krita_image_uploader/
 │       ├── __init__.py                 # registers the Extension AND a DockWidgetFactory("kritaImageUploaderDocker", ...)
-│       └── docker.py                   # file-based agent bridge (~370 lines)
+│       ├── docker.py                   # Krita action handlers + docker
+│       └── bridge_core.py              # stdlib-only file protocol (unit-tested)
 ├── tools/
-│   └── kra_build.py                    # headless kritarunner .kra builder
+│   ├── kra_build.py                    # headless kritarunner .kra builder
+│   ├── kra_prepare.py                  # PNG/JPG -> BGRA tiles + manifest (+ preview.png), Pillow
+│   └── krita_bridge.py                 # CLI client for the bridge (queue, wait, exit code)
+├── tests/                              # pytest suite; fake_krita.py stands in for Krita
 ├── docs/
 │   ├── inherit-alpha-howto.md          # human/agent how-to for clipping-mask painting
 │   └── agent-skill.md                  # condensed agent reference (layer ops, gotchas, kritarunner)
@@ -35,20 +40,20 @@ krita-agent/
 
 ## Component 1 — AI Image docker (`pykrita/grok_image/grok_image.py`)
 
-**UI (QVBoxLayout in a DockWidget titled "AI Image"):** provider `QComboBox` — `["Nano Banana (img2img)", "Grok 2 Image", "Imagen 4", "Local — krita-ai-diffusion"]`; a `QPlainTextEdit` prompt (min height 80, placeholder "Describe the image…"); a `QCheckBox` "Use canvas / selection as input image"; a small gray region label; a Count `QSpinBox` (1–4); a Generate `QPushButton`; a word-wrapping status `QLabel`.
+**UI (QVBoxLayout in a DockWidget titled "AI Image"):** provider `QComboBox` — `["Nano Banana (img2img)", "Grok Imagine", "Imagen 4", "Local — krita-ai-diffusion"]`; a `QPlainTextEdit` prompt (min height 80, placeholder "Describe the image…"); a `QCheckBox` "Use canvas / selection as input image"; a small gray region label; a Count `QSpinBox` (1–4); a Generate `QPushButton`; a word-wrapping status `QLabel`.
 
 **Control logic (`refresh_controls`):** the input-image checkbox is only enabled for Nano Banana (the sole img2img provider); the count spinner is disabled for Local and Nano Banana; when Local is selected the button relabels to "Open krita-ai-diffusion docker" and pressing it just prints instructions to the status label (defer local Stable Diffusion to the existing krita-ai-diffusion plugin — do not reimplement it).
 
 **Selection-aware region:** `active_selection_bounds()` returns `(x, y, w, h)` of `document.selection()` if it has positive size, else the full document, else `None` when no document. `canvasChanged` and provider switches update the region label ("Selection: WxH at (x, y)." vs "No selection — using full canvas (WxH).").
 
-**Canvas capture trick:** to send pixels to the model, call `document.refreshProjection()` then try `document.pixelData(x, y, w, h)`; if the returned length equals `w*h*4`, wrap it in `QImage(raw, w, h, QImage.Format_RGBA8888).copy()` (the `.copy()` detaches from the buffer — required). **Fallback** for non-RGBA/U8 documents: `document.thumbnail(full_w, full_h)` then `.copy(x, y, w, h)` to crop. Encode to PNG via `QBuffer` + `qimage.save(buffer, "PNG")`.
+**Canvas capture trick:** to send pixels to the model, call `document.refreshProjection()` then try `document.pixelData(x, y, w, h)`; if the returned length equals `w*h*4`, the bytes are **BGRA**: swap R/B, then wrap them in `QImage(rgba, w, h, w*4, QImage.Format_RGBA8888).copy()` (the `.copy()` detaches from the buffer — required). **Fallback** for non-RGBA/U8 documents: `document.thumbnail(full_w, full_h)` then `.copy(x, y, w, h)` to crop. Encode to PNG via `QBuffer` + `qimage.save(buffer, "PNG")`.
 
 **Providers (each a ProviderWorker subclass with a shared `post_json(url, headers, body)` using `urllib.request`, 180 s timeout):**
 - **Grok**: POST `https://api.x.ai/v1/images/generations`, header `Authorization: Bearer <XAI_API_KEY>`, body `{model: "grok-imagine-image", prompt, n: count, response_format: "b64_json"}`. Read `data[].b64_json` (base64-decode) or fetch `data[].url`.
-- **Nano Banana**: POST `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=<GOOGLE_API_KEY>` with `{"contents":[{"parts": parts}]}` where `parts` is `[{"text": prompt}]` plus, for img2img, `{"inline_data": {"mime_type": "image/png", "data": <base64 PNG>}}`. Collect images from `candidates[].content.parts[].inline_data.data` — **check both `inline_data` and `inlineData` spellings**.
-- **Imagen 4**: POST `.../imagen-4.0-generate-001:predict?key=...` with `{"instances":[{"prompt": prompt}], "parameters":{"sampleCount": count}}`; read `predictions[].bytesBase64Encoded` (fall back to `imageBytes`).
+- **Nano Banana**: POST `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent` with header `x-goog-api-key: <GOOGLE_API_KEY>` (never put keys in URLs — they leak into error messages) and `{"contents":[{"parts": parts}]}` where `parts` is `[{"text": prompt}]` plus, for img2img, `{"inline_data": {"mime_type": "image/png", "data": <base64 PNG>}}`. Collect images from `candidates[].content.parts[].inline_data.data` — **check both `inline_data` and `inlineData` spellings**.
+- **Imagen 4**: POST `.../imagen-4.0-generate-001:predict` (same header) with `{"instances":[{"prompt": prompt}], "parameters":{"sampleCount": count}}`; read `predictions[].bytesBase64Encoded` (fall back to `imageBytes`).
 
-**Result handling:** if a key is missing, show a `QMessageBox.warning` telling the user exactly where to put it. On success: if no document is open, create one sized to the first image (`createDocument(w, h, "AI Image", "RGBA", "U8", "", 300.0)` + `activeWindow().addView(doc)`). For each image: decode with `QImage.fromData(QByteArray(bytes))`, convert to `Format_RGBA8888`; if the request used a selection, `scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)` so the result drops precisely into the selection rect; create a paint layer named after the provider, `rootNode().addChildNode(layer, None)`, then `layer.setPixelData(QByteArray(bytes(ptr)), x, y, w, h)` where `ptr = qimage.bits(); ptr.setsize(qimage.byteCount())`. Finish with `document.refreshProjection()` and report "Added N layer(s)."
+**Result handling:** if a key is missing, show a `QMessageBox.warning` telling the user exactly where to put it. On success: if no document is open, create one sized to the first image (`createDocument(w, h, "AI Image", "RGBA", "U8", "", 300.0)` + `activeWindow().addView(doc)`). For each image: decode with `QImage.fromData(QByteArray(bytes))`, convert to `Format_RGBA8888`; if the request used a selection, `scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)` so the result drops precisely into the selection rect; create a paint layer named after the provider, `rootNode().addChildNode(layer, None)`, then **swap R and B** (Krita's RGBA/U8 memory order is BGRA — same swizzle as the bridge) and `layer.setPixelData(QByteArray(bgra), x, y, w, h)`. Finish with `document.refreshProjection()` and report "Added N layer(s)."
 
 ## Component 2 — Krita Image Uploader bridge (`pykrita/krita_image_uploader/docker.py`)
 

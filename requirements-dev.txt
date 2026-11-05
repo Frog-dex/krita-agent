@@ -1,0 +1,5 @@
+# Only needed to run the test suite / tools outside Krita.
+pytest>=8
+ruff>=0.6
+pillow>=10        # tools/kra_prepare.py
+PyQt5>=5.15       # plugin tests run against tests/fake_krita.py

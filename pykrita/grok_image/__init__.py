@@ -1,4 +1,5 @@
-from krita import Krita, DockWidgetFactory, DockWidgetFactoryBase
+from krita import DockWidgetFactory, DockWidgetFactoryBase, Krita
+
 from .grok_image import GrokImageDocker
 
 Krita.instance().addDockWidgetFactory(
