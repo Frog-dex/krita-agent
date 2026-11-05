@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Krita Agent</title>
+<meta name="description" content="AI painting tools for Krita: multi-provider image generation onto layers, a file bridge agents can drive, and a headless layered .kra builder.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&family=VT323&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #efe5cf;
+    --paper-deep: #e2d3b2;
+    --stain: rgba(160, 112, 40, 0.13);
+    --ink: #1c1915;
+    --ink-soft: #4b4339;
+    --red: #c4281f;
+    --red-deep: #8f1b14;
+    --win: #c3c3c3;
+    --win-light: #ffffff;
+    --win-dark: #7b7b7b;
+    --win-darker: #2b2b2b;
+    --title-a: #0a1f8f;
+    --title-b: #3a7bd5;
+    --term: #14110e;
+    --term-ink: #e9dcc0;
+    --term-green: #8fd46b;
+    --term-amber: #f0b44c;
+    --pixel: "Silkscreen", "VT323", monospace;
+    --mono: "IBM Plex Mono", ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    color: var(--ink);
+    background:
+      radial-gradient(ellipse 380px 260px at 12% 18%, var(--stain), transparent 70%),
+      radial-gradient(ellipse 300px 220px at 88% 42%, var(--stain), transparent 70%),
+      radial-gradient(ellipse 420px 300px at 30% 86%, var(--stain), transparent 70%),
+      var(--paper);
+    font: 17px/1.55 var(--mono);
+  }
+  a { color: var(--red-deep); }
+  img { max-width: 100%; display: block; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 16px; }
+
+  /* --- Hero ------------------------------------------------------------ */
+  .hero { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr); gap: 48px; align-items: center; padding: 64px 0 40px; }
+  .wordmark {
+    font: 700 clamp(44px, 8.5vw, 104px)/0.9 var(--pixel);
+    color: var(--red);
+    margin: 0;
+    letter-spacing: -0.01em;
+    text-shadow: 4px 4px 0 var(--ink);
+  }
+  .tagline { font: 400 clamp(26px, 3.8vw, 40px)/1.1 var(--pixel); margin: 18px 0 26px; }
+  .bullets { list-style: none; padding: 0; margin: 0 0 30px; font: 400 clamp(20px, 2.6vw, 28px)/1.35 "VT323", monospace; letter-spacing: 0.04em; text-transform: uppercase; }
+  .bullets li::before { content: "▪ "; color: var(--red); }
+  .cta { display: flex; flex-wrap: wrap; gap: 14px; }
+  .btn {
+    font: 700 15px/1 var(--pixel); text-decoration: none; color: var(--ink);
+    background: var(--win); padding: 13px 18px;
+    box-shadow: inset -2px -2px 0 var(--win-darker), inset 2px 2px 0 var(--win-light), inset -4px -4px 0 var(--win-dark);
+  }
+  .btn:active { box-shadow: inset 2px 2px 0 var(--win-darker), inset -2px -2px 0 var(--win-light); }
+  .btn.primary { background: var(--red); color: #fff; box-shadow: inset -2px -2px 0 #4d0d09, inset 2px 2px 0 #ef7b72, inset -4px -4px 0 var(--red-deep); }
+  .box-art { transform: rotate(2.2deg); box-shadow: 14px 18px 0 rgba(28, 25, 21, 0.22); justify-self: center; max-width: 420px; }
+
+  /* --- Section headings ---------------------------------------------------- */
+  section { padding: 44px 0; }
+  h2 { font: 700 clamp(26px, 4vw, 40px)/1.1 var(--pixel); margin: 0 0 8px; }
+  h2 .num { color: var(--red); }
+  .lede { color: var(--ink-soft); max-width: 70ch; margin: 0 0 28px; }
+
+  /* --- Win95 windows ------------------------------------------------------- */
+  .win {
+    background: var(--win);
+    box-shadow: inset -2px -2px 0 var(--win-darker), inset 2px 2px 0 var(--win-light), inset -4px -4px 0 var(--win-dark), 8px 10px 0 rgba(28, 25, 21, 0.18);
+    padding: 4px;
+    min-width: 0;
+  }
+  .win-title {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    background: linear-gradient(90deg, var(--title-a), var(--title-b));
+    color: #fff; font: 700 13px/1 var(--pixel); padding: 5px 5px 5px 8px;
+  }
+  .win-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .win-btns { display: flex; gap: 2px; flex: none; }
+  .win-btns i {
+    width: 18px; height: 16px; background: var(--win); display: grid; place-items: center;
+    color: var(--ink); font: 700 11px/1 var(--mono); font-style: normal;
+    box-shadow: inset -1px -1px 0 var(--win-darker), inset 1px 1px 0 var(--win-light);
+  }
+  .win-body { padding: 16px 16px 18px; font-size: 15px; }
+  .win-body h3 { font: 700 18px/1.2 var(--pixel); margin: 0 0 8px; }
+  .win-body p { margin: 0 0 10px; }
+  .win-body code, .lede code, figcaption code { font-family: var(--mono); background: rgba(255, 255, 255, 0.55); padding: 1px 4px; }
+  .path { font-size: 13px; color: var(--ink-soft); }
+
+  .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 26px; }
+  .tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+  .tags b { font: 400 12px/1 var(--pixel); background: var(--paper); padding: 5px 7px; box-shadow: inset 1px 1px 0 var(--win-dark), inset -1px -1px 0 var(--win-light); }
+
+  /* --- Layer stack (Inherit Alpha) ----------------------------------------- */
+  .split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 32px; align-items: start; }
+  .layers { background: #fff; box-shadow: inset 1px 1px 0 var(--win-dark), inset -1px -1px 0 var(--win-light); font-size: 14px; }
+  .layer { display: grid; grid-template-columns: 22px 46px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 8px 10px; border-bottom: 1px solid #ddd; }
+  .layer.group { background: #eceaf6; font-weight: 600; }
+  .layer.child { padding-left: 34px; }
+  .layer.sel { background: #0a1f8f; color: #fff; }
+  .thumb { width: 46px; height: 32px; background: repeating-conic-gradient(#d6d6d6 0 25%, #fff 0 50%) 0 0/10px 10px; position: relative; box-shadow: inset 0 0 0 1px #999; }
+  .thumb::after { content: ""; position: absolute; inset: 5px 12px; border-radius: 50%; }
+  .thumb.base::after { background: #1c1915; }
+  .thumb.paint::after { background: radial-gradient(circle at 35% 30%, #fff 0 8%, #f05a4f 9% 45%, var(--red-deep) 75%); }
+  .thumb.bg { background: #2a2420; }
+  .thumb.bg::after { display: none; }
+  .alpha { font: 700 15px/1 var(--mono); width: 24px; height: 22px; display: grid; place-items: center; color: var(--ink-soft); }
+  .alpha.on { background: var(--term-amber); color: var(--ink); box-shadow: inset 1px 1px 0 #fff4, inset -1px -1px 0 #0004; }
+  .eye { opacity: 0.7; }
+  .rules { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
+  .rules li { background: rgba(255, 255, 255, 0.45); padding: 12px 14px; border-left: 5px solid var(--red); font-size: 15px; }
+  .rules strong { font-family: var(--pixel); font-weight: 700; }
+
+  /* --- Terminal ------------------------------------------------------------ */
+  .term { background: var(--term); color: var(--term-ink); font: 14px/1.6 var(--mono); padding: 16px 18px; margin: 0; overflow-x: auto; white-space: pre; }
+  .term .p { color: var(--term-green); }
+  .term .c { color: #8c8170; }
+  .term .k { color: var(--term-amber); }
+
+  /* --- Demo figure ---------------------------------------------------------- */
+  figure { margin: 0; }
+  figcaption { font-size: 14px; color: var(--ink-soft); margin-top: 12px; }
+  .demo img { width: 100%; height: auto; }
+
+  /* --- Shelf ------------------------------------------------------------------ */
+  .shelf { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 14px; align-items: end; padding: 20px 18px 0; background: linear-gradient(transparent calc(100% - 18px), #5b4128 calc(100% - 18px)); }
+  .shelf a, .shelf div { display: block; text-decoration: none; color: inherit; transition: transform 0.15s; }
+  .shelf a:hover { transform: translateY(-8px) rotate(-1.5deg); }
+  .shelf img { box-shadow: 5px 6px 0 rgba(28, 25, 21, 0.25); margin-bottom: 18px; }
+  .shelf .here img { outline: 4px solid var(--red); outline-offset: 3px; }
+  .shelf-labels { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 14px; padding: 10px 18px 0; font: 400 12px/1.25 var(--pixel); text-align: center; }
+
+  /* --- Footer spec bar --------------------------------------------------------- */
+  .specbar { margin: 40px 0 0; border: 3px solid var(--ink); font: 400 clamp(15px, 2vw, 20px)/1.3 "VT323", monospace; letter-spacing: 0.06em; text-transform: uppercase; display: flex; flex-wrap: wrap; }
+  .specbar span { padding: 8px 14px; border-right: 2px solid var(--ink); }
+  .specbar span:last-child { border-right: 0; }
+  footer { padding: 0 0 50px; font-size: 14px; color: var(--ink-soft); }
+  footer p { margin: 14px 0 0; }
+
+  @media (max-width: 900px) {
+    .hero { grid-template-columns: 1fr; padding-top: 36px; }
+    .box-art { max-width: 220px; order: -1; }
+    .grid3, .split { grid-template-columns: 1fr; }
+    .shelf, .shelf-labels { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .shelf-labels { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } .shelf a { transition: none; } }
+</style>
+</head>
+<body>
+<main class="wrap">
+
+  <header class="hero">
+    <div>
+      <h1 class="wordmark">KRITA<br>AGENT</h1>
+      <p class="tagline">AI Painting Tools</p>
+      <ul class="bullets">
+        <li>Auto-paint generation onto layers</li>
+        <li>Selection-aware image-to-image</li>
+        <li>A file bridge any agent can drive</li>
+        <li>Headless layered .kra builds</li>
+      </ul>
+      <div class="cta">
+        <a class="btn primary" href="https://github.com/Frog-dex/krita-agent#quick-start">Install</a>
+        <a class="btn" href="https://github.com/Frog-dex/krita-agent">Source on GitHub</a>
+        <a class="btn" href="inherit-alpha-howto.md">Inherit-Alpha how-to</a>
+      </div>
+    </div>
+    <img class="box-art" src="box.jpg" width="671" height="900" alt="Krita Agent box art: a robot hand painting a red stroke between two retro tool windows">
+  </header>
+
+  <section id="box">
+    <h2><span class="num">01</span> What's in the box</h2>
+    <p class="lede">Two Krita plugins and three command-line tools. The plugins use only Krita's bundled Python (PyQt5 + stdlib), so there is nothing to pip-install inside Krita.</p>
+    <div class="grid3">
+      <article class="win">
+        <div class="win-title"><span>AI Image.docker</span><span class="win-btns"><i>_</i><i>□</i><i>×</i></span></div>
+        <div class="win-body">
+          <h3>Generate onto layers</h3>
+          <p>Pick Nano Banana, Grok Imagine or Imagen 4, type a prompt, and each result lands as a new paint layer. Lasso a region and Nano Banana repaints exactly those pixels, then scales the result back into the selection.</p>
+          <p class="path"><code>pykrita/grok_image/</code></p>
+          <div class="tags"><b>txt2img</b><b>img2img</b><b>QThread</b></div>
+        </div>
+      </article>
+      <article class="win">
+        <div class="win-title"><span>Uploader.bridge</span><span class="win-btns"><i>_</i><i>□</i><i>×</i></span></div>
+        <div class="win-body">
+          <h3>Drive a live Krita</h3>
+          <p>Drop a JSON file into a folder and Krita picks it up within 500&nbsp;ms. It can insert an image, export the canvas or open a project. Results come back in <code>done/</code> or as an <code>.error.json</code>. It uses no sockets and runs no server.</p>
+          <p class="path"><code>pykrita/krita_image_uploader/</code> · <code>tools/krita_bridge.py</code></p>
+          <div class="tags"><b>insert</b><b>export</b><b>open</b><b>ping</b></div>
+        </div>
+      </article>
+      <article class="win">
+        <div class="win-title"><span>kra_build.exe</span><span class="win-btns"><i>_</i><i>□</i><i>×</i></span></div>
+        <div class="win-body">
+          <h3>Layered files from code</h3>
+          <p><code>kra_prepare</code> turns plain PNGs into raw BGRA tiles and a manifest. <code>kra_build</code> then runs inside headless <code>kritarunner</code> and writes a real <code>.kra</code> with one group per object, already set up for clipping-mask painting.</p>
+          <p class="path"><code>tools/kra_prepare.py</code> · <code>tools/kra_build.py</code></p>
+          <div class="tags"><b>kritarunner</b><b>Inherit Alpha</b></div>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <section id="clip">
+    <h2><span class="num">02</span> The clipping-mask move</h2>
+    <p class="lede">Every object <code>kra_build</code> makes follows the same pattern. You paint on the top layer, and it can never spill off the shape underneath.</p>
+    <div class="split">
+      <div class="win">
+        <div class="win-title"><span>Layers</span><span class="win-btns"><i>_</i><i>×</i></span></div>
+        <div class="layers" role="img" aria-label="Layer stack: a group named marble 1 containing a paint layer with Inherit Alpha on above a base shape layer, over a background layer">
+          <div class="layer group"><span class="eye">👁</span><span class="thumb paint"></span><span>▾ marble 1</span><span class="alpha"></span></div>
+          <div class="layer child sel"><span class="eye">👁</span><span class="thumb paint"></span><span>color - Inherit Alpha</span><span class="alpha on">α</span></div>
+          <div class="layer child"><span class="eye">👁</span><span class="thumb base"></span><span>border</span><span class="alpha">α</span></div>
+          <div class="layer"><span class="eye">👁</span><span class="thumb bg"></span><span>BACKGROUND</span><span class="alpha">α</span></div>
+        </div>
+      </div>
+      <ul class="rules">
+        <li><strong>Inherit Alpha = clipping mask.</strong> The layer only shows where the layers below it <em>in the same group</em> already have pixels.</li>
+        <li><strong>Normal covers, Color tints.</strong> Use Multiply for shadows and Add for highlights, each on its own Inherit-Alpha layer.</li>
+        <li><strong>White paints grey?</strong> The brush is textured or Flow is under 100%. Switch to a hard round at Flow 100, or use <em>Edit ▸ Fill with Foreground Color</em>.</li>
+        <li><strong>Golden rule for agents:</strong> never edit the artist's live file. Render to new files and wait for sign-off.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="bridge">
+    <h2><span class="num">03</span> Talk to Krita from a shell</h2>
+    <p class="lede"><code>krita_bridge.py</code> queues a command, waits for Krita to answer, and exits <code>0</code> on success, <code>1</code> on failure or <code>2</code> on timeout. A script or AI agent never has to watch folders itself.</p>
+    <div class="win">
+      <div class="win-title"><span>MS-DOS Prompt — krita_bridge</span><span class="win-btns"><i>_</i><i>□</i><i>×</i></span></div>
+<pre class="term"><span class="p">$</span> python3 tools/krita_bridge.py ping
+{ "action": "ping", "status": <span class="k">"succeeded"</span>,
+  "message": "pong (protocol 2, Krita 5.2.6, active: mycard.kra)" }
+
+<span class="p">$</span> python3 tools/krita_bridge.py insert result.png --name "AI result" --scale 0.5
+<span class="c"># → new paint layer in the active document, red stays red (BGRA-correct)</span>
+
+<span class="p">$</span> python3 tools/krita_bridge.py export --max-side 1024
+<span class="c"># → ~/.krita-image-uploader/krita/latest.png + latest.json</span>
+
+<span class="p">$</span> python3 tools/krita_bridge.py live on   <span class="c"># stream the canvas every 2 s</span></pre>
+    </div>
+  </section>
+
+  <section id="demo">
+    <h2><span class="num">04</span> Built from the shelf</h2>
+    <p class="lede">This is real output from <code>kra_prepare</code>. Its input was the eight box covers in <code>docs/shelf/</code>, and it auto-laid them out on a dark background. Fed to <code>kra_build</code>, each box becomes its own group with an Inherit-Alpha paint layer, ready to paint over.</p>
+    <div class="win demo">
+      <div class="win-title"><span>preview.png — 1396×932</span><span class="win-btns"><i>_</i><i>□</i><i>×</i></span></div>
+      <figure>
+        <img src="showcase/kra-prepare-shelf.jpg" width="1396" height="932" loading="lazy" alt="Eight Sovereign Software box covers laid out in a four-by-two grid on a dark background">
+      </figure>
+    </div>
+    <figcaption>
+      <code>python3 tools/kra_prepare.py ~/kra-build docs/shelf/*.jpg --bg-color "#2a2420" --gap 36 --margin 48 --preview</code>
+    </figcaption>
+  </section>
+
+  <section id="shelf">
+    <h2><span class="num">05</span> The Sovereign Software shelf</h2>
+    <p class="lede">Every box on the Spirit Strikers software shelf. Put the discs in the terminal at <a href="https://frog-dex.github.io/terrace-world/library.html#software">Terrace World's library</a>.</p>
+    <div class="shelf">
+      <a href="https://github.com/Frog-dex/terrace-world"><img src="shelf/terrace-world.jpg" width="298" height="400" alt="Terrace World box"></a>
+      <div><img src="shelf/snowberry-os.jpg" width="298" height="400" alt="Snowberry OS box"></div>
+      <div><img src="shelf/lizard-widget.jpg" width="298" height="400" alt="Lizard Widget box"></div>
+      <div><img src="shelf/frog-widget.jpg" width="298" height="400" alt="Frog Widget box"></div>
+      <a href="https://github.com/Frog-dex/3d-models-pack"><img src="shelf/models-pack.jpg" width="298" height="400" alt="3D Models Pack box"></a>
+      <a href="https://github.com/Frog-dex/plan-and-code"><img src="shelf/plan-and-code.jpg" width="298" height="400" alt="Plan &amp; Code box"></a>
+      <a class="here" href="https://github.com/Frog-dex/krita-agent"><img src="shelf/krita-agent.jpg" width="298" height="400" alt="Krita Agent box (this project)"></a>
+      <a href="https://github.com/Frog-dex/card-forge"><img src="shelf/card-forge.jpg" width="298" height="400" alt="Card Forge box"></a>
+    </div>
+    <div class="shelf-labels" aria-hidden="true">
+      <span>Terrace World</span><span>Snowberry OS</span><span>Lizard Widget</span><span>Frog Widget</span>
+      <span>3D Models</span><span>Plan &amp; Code</span><span>Krita Agent</span><span>Card Forge</span>
+    </div>
+  </section>
+
+  <footer>
+    <div class="specbar"><span>Krita 5.x</span><span>Python 3.8+</span><span>PyQt5 · stdlib</span><span>No pip in Krita</span><span>MIT</span></div>
+    <p>© 2026 Blu Inman · <a href="https://github.com/Frog-dex/krita-agent">github.com/Frog-dex/krita-agent</a></p>
+  </footer>
+</main>
+</body>
+</html>

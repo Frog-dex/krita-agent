@@ -3,3 +3,8 @@ __pycache__/
 *.pyc
 *.kra-autosave
 _*.png
+
+# test / tool outputs
+.pytest_cache/
+.ruff_cache/
+*.result.json

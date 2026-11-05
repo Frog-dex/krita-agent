@@ -12,8 +12,8 @@ manifest.json schema:
   {
     "name": "My Document",              // optional document title
     "canvas": [width, height],
-    "resolution": 300,
-    "bg":    {"file": "bg.bgra", "w": W, "h": H},
+    "resolution": 300,                  // optional, default 300
+    "bg":    {"file": "bg.bgra", "w": W, "h": H},   // optional
     "cards": [
       {"name": "card 1", "file": "card1.bgra",
        "x": X, "y": Y, "w": W, "h": H},
@@ -21,55 +21,118 @@ manifest.json schema:
     ]
   }
 
-Pixel files are raw 8-bit BGRA bytes (w*h*4). From PIL/numpy:
+Pixel files are raw 8-bit BGRA bytes (w*h*4). Easiest: let
+tools/kra_prepare.py make them from ordinary PNGs. From PIL/numpy by hand:
   np.array(im.convert("RGBA"))[:, :, [2, 1, 0, 3]].tobytes()
+
+kritarunner swallows print(), so the result is also written next to the output
+as <KRA_OUT>.result.json: {"ok": true|false, "out": ..., "layers": N, "error": ...}
 
 Usage:
   cp tools/kra_build.py "~/Library/Application Support/kritarunner/krita/pykrita/"
   KRA_BASE=~/my-assets/_kra KRA_OUT=~/my-assets/out.kra \
     /Applications/krita.app/Contents/MacOS/kritarunner -s kra_build
 """
-import json, os
+import json
+import os
+
 from krita import Krita
 from PyQt5.QtCore import QByteArray
 
-BASE = os.environ.get("KRA_BASE", os.path.expanduser("~/kra-build"))
-OUT  = os.environ.get("KRA_OUT", os.path.join(BASE, "output.kra"))
+INHERIT_ALPHA_LAYER = "color - Inherit Alpha"
 
 
-def __main__(*args):
-    man = json.load(open(os.path.join(BASE, "manifest.json")))
-    cw, ch = man["canvas"]
+def config():
+    base = os.path.expanduser(os.environ.get("KRA_BASE", "~/kra-build"))
+    out = os.path.expanduser(os.environ.get("KRA_OUT", os.path.join(base, "output.kra")))
+    return base, out
+
+
+def load_manifest(base):
+    with open(os.path.join(base, "manifest.json")) as handle:
+        manifest = json.load(handle)
+    if "canvas" not in manifest or len(manifest["canvas"]) != 2:
+        raise ValueError("manifest.canvas must be [width, height]")
+    for i, card in enumerate(manifest.get("cards", [])):
+        missing = [k for k in ("file", "x", "y", "w", "h") if k not in card]
+        if missing:
+            raise ValueError(f"cards[{i}] is missing {', '.join(missing)}")
+    return manifest
+
+
+def read_tile(base, spec):
+    """Read a raw BGRA tile and check it matches its declared size."""
+    path = os.path.join(base, spec["file"])
+    with open(path, "rb") as handle:
+        data = handle.read()
+    expected = int(spec["w"]) * int(spec["h"]) * 4
+    if len(data) != expected:
+        raise ValueError(
+            f"{spec['file']}: {len(data)} bytes, expected {expected} "
+            f"({spec['w']}x{spec['h']} BGRA)"
+        )
+    return data
+
+
+def build(base, out):
+    manifest = load_manifest(base)
+    cw, ch = manifest["canvas"]
 
     app = Krita.instance()
     app.setBatchmode(True)
-    doc = app.createDocument(cw, ch, man.get("name", "kra-build"),
-                             "RGBA", "U8", "", float(man["resolution"]))
+    doc = app.createDocument(int(cw), int(ch), manifest.get("name", "kra-build"),
+                             "RGBA", "U8", "", float(manifest.get("resolution", 300)))
     doc.setBatchmode(True)
     root = doc.rootNode()
+    layers = 0
 
-    bg = doc.createNode("BACKGROUND", "paintlayer")
-    root.addChildNode(bg, None)
-    bgd = open(os.path.join(BASE, man["bg"]["file"]), "rb").read()
-    bg.setPixelData(QByteArray(bgd), 0, 0, man["bg"]["w"], man["bg"]["h"])
+    bg_spec = manifest.get("bg")
+    if bg_spec:
+        bg = doc.createNode("BACKGROUND", "paintlayer")
+        root.addChildNode(bg, None)
+        bg.setPixelData(QByteArray(read_tile(base, bg_spec)), 0, 0, int(bg_spec["w"]), int(bg_spec["h"]))
+        layers += 1
 
-    for c in man["cards"]:
-        grp = doc.createNode(c["name"], "grouplayer")
-        root.addChildNode(grp, None)
+    for i, card in enumerate(manifest.get("cards", []), start=1):
+        group = doc.createNode(card.get("name") or f"object {i}", "grouplayer")
+        root.addChildNode(group, None)
 
         border = doc.createNode("border", "paintlayer")
-        grp.addChildNode(border, None)
-        d = open(os.path.join(BASE, c["file"]), "rb").read()
-        border.setPixelData(QByteArray(d), c["x"], c["y"], c["w"], c["h"])
+        group.addChildNode(border, None)
+        border.setPixelData(QByteArray(read_tile(base, card)),
+                            int(card["x"]), int(card["y"]), int(card["w"]), int(card["h"]))
 
-        paint = doc.createNode("color - Inherit Alpha", "paintlayer")
-        grp.addChildNode(paint, border)        # placed ABOVE the border
-        paint.setInheritAlpha(True)            # clip paint to the border shape
+        paint = doc.createNode(INHERIT_ALPHA_LAYER, "paintlayer")
+        group.addChildNode(paint, border)        # placed ABOVE the border
+        paint.setInheritAlpha(True)              # clip paint to the border shape
+        layers += 3
 
     doc.refreshProjection()
-    ok = doc.saveAs(OUT)
-    print("SAVED" if ok else "SAVE-FAILED", OUT)
+    ok = bool(doc.saveAs(out))
     doc.close()
+    return ok, layers
+
+
+def write_result(out, payload):
+    try:
+        with open(out + ".result.json", "w") as handle:
+            json.dump(payload, handle, indent=2)
+    except OSError:
+        pass
+
+
+def __main__(*args):
+    base, out = config()
+    try:
+        ok, layers = build(base, out)
+        payload = {"ok": ok, "out": out, "layers": layers}
+        if not ok:
+            payload["error"] = "Document.saveAs returned False"
+    except Exception as exc:  # noqa: BLE001 - report every failure in the result file
+        payload = {"ok": False, "out": out, "error": f"{type(exc).__name__}: {exc}"}
+    write_result(out, payload)
+    print("SAVED" if payload["ok"] else "SAVE-FAILED", out, payload.get("error", ""))
+    return payload
 
 
 if __name__ == "__main__":

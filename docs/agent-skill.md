@@ -84,8 +84,27 @@ Hard-won gotchas:
 - Pass per-run config via env vars (kritarunner inherits env): e.g.
   `KRA_BASE=... KRA_OUT=... kritarunner -s kra_build`.
 
-The working script is [`tools/kra_build.py`](../tools/kra_build.py) — builds
-groups + Inherit-Alpha layers from a manifest of raw BGRA tiles.
+The working script is [`tools/kra_build.py`](../tools/kra_build.py). It builds
+groups + Inherit-Alpha layers from a manifest of raw BGRA tiles, and writes
+`<KRA_OUT>.result.json` (`{"ok", "out", "layers", "error"}`) because `print()` is
+swallowed. Make the tiles + manifest from ordinary PNGs with
+[`tools/kra_prepare.py`](../tools/kra_prepare.py) (`--preview` renders a flat
+`preview.png` for sign-off first).
+
+## 6b. Drive a live Krita (the bridge)
+
+With the *Krita Image Uploader* plugin enabled, use
+[`tools/krita_bridge.py`](../tools/krita_bridge.py) rather than writing command
+files by hand. It waits for Krita's answer and exits 0 (ok), 1 (failed) or 2 (timeout):
+
+```
+python3 tools/krita_bridge.py ping
+python3 tools/krita_bridge.py insert render.png --name "AI pass 1"
+python3 tools/krita_bridge.py export --max-side 1024   # read krita/latest.png
+```
+
+Same golden rule: insert into a *new layer* or a *new document*, never paint over
+the artist's layers.
 
 ## 7. Golden rule for agents
 

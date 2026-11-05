@@ -1,213 +1,184 @@
-import datetime
-import json
+"""Krita Image Uploader — a file-based bridge so an external agent can drive Krita.
+
+Krita polls ``~/.krita-image-uploader/commands/`` every 500 ms. The on-disk
+protocol (queue, done/, .error.json, atomic writes) lives in ``bridge_core.py``;
+this module only supplies the Krita-side action handlers and the docker UI.
+"""
+
 import os
-import stat
 import time
 from pathlib import Path
 
 from krita import DockWidget, Extension, Krita
-from PyQt5.QtCore import QByteArray, QTimer, Qt
+from PyQt5.QtCore import QByteArray, Qt, QTimer
 from PyQt5.QtGui import QImage
 from PyQt5.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
 
+from . import bridge_core as core
 
-STATE_DIR = Path.home() / ".krita-image-uploader"
-KRITA_DIR = STATE_DIR / "krita"
-COMMAND_DIR = STATE_DIR / "commands"
-DONE_DIR = COMMAND_DIR / "done"
-LATEST_IMAGE = KRITA_DIR / "latest.png"
-LATEST_INFO = KRITA_DIR / "latest.json"
-OPEN_PROJECTS = KRITA_DIR / "projects.json"
-SNAPSHOT_DIR = KRITA_DIR / "snapshots"
-STATE_FILE = STATE_DIR / "state.json"
-
-
-def ensure_dirs():
-    for folder in (STATE_DIR, KRITA_DIR, SNAPSHOT_DIR, COMMAND_DIR, DONE_DIR):
-        folder.mkdir(parents=True, exist_ok=True)
+PATHS = core.BridgePaths()
 
 
 def clear_preview_locks():
-    for path in (KRITA_DIR, LATEST_IMAGE, LATEST_INFO, LATEST_IMAGE.with_suffix(".tmp.png")):
+    """macOS Finder/quick-look can leave immutable flags that wedge the bridge."""
+    for path in (PATHS.krita, PATHS.latest_image, PATHS.latest_info):
+        if not path.exists():
+            continue
         try:
-            if hasattr(os, "chflags") and path.exists():
+            if hasattr(os, "chflags"):
                 os.chflags(path, 0)
-        except Exception:
-            pass
-        try:
-            if path.is_dir():
-                path.chmod(0o755)
-            elif path.exists():
-                path.chmod(0o644)
-        except Exception:
+            path.chmod(0o755 if path.is_dir() else 0o644)
+        except OSError:
             pass
 
 
 def now_text():
-    return datetime.datetime.now().strftime("%H:%M:%S")
-
-
-def state_value(key, default=None):
-    try:
-        if not STATE_FILE.exists():
-            return default
-        return json.loads(STATE_FILE.read_text()).get(key, default)
-    except Exception:
-        return default
+    return core.timestamp()[-8:]
 
 
 class BridgeSync:
     def __init__(self):
-        ensure_dirs()
+        PATHS.ensure()
         self.last_status = "Idle"
         self._last_project_export = 0.0
+        self.handlers = {
+            "insert_image": self.handle_insert_image,
+            "export_canvas": self.handle_export_canvas,
+            "open_project": self.handle_open_project,
+            "ping": self.handle_ping,
+        }
+
+    # --- timers -------------------------------------------------------------
 
     def tick_commands(self):
         self.export_open_projects_if_needed()
         self.process_commands()
 
     def tick_canvas(self):
-        if not state_value("live_canvas_preview", False):
+        if not core.read_state(PATHS, "live_canvas_preview", False):
             return
-        self.export_latest_canvas()
+        try:
+            self.export_latest_canvas()
+        except Exception as exc:  # noqa: BLE001 - never let a timer raise into Krita
+            self.last_status = "Live export error: " + str(exc)
+
+    def process_commands(self):
+        for name, status, message in core.process_commands(PATHS, self.handlers):
+            if status == "failed":
+                self.last_status = f"Command error ({name}): {message}"
+            else:
+                self.last_status = f"{message} at {now_text()}"
+
+    # --- handlers -----------------------------------------------------------
+
+    def handle_insert_image(self, command):
+        path = Path(command.get("path", "")).expanduser()
+        name = command.get("name") or "AI result"
+        self.insert_image(path, name, core.clamp_scale(command.get("scale", 1.0)))
+        return "Inserted image"
+
+    def handle_export_canvas(self, command):
+        info = self.export_latest_canvas(command.get("max_side", 1024))
+        self.export_open_projects()
+        return "Captured canvas: " + info["preview_path"]
+
+    def handle_open_project(self, command):
+        self.open_project(Path(command.get("path", "")).expanduser())
+        self.export_open_projects()
+        try:
+            self.export_latest_canvas(command.get("max_side", 1024))
+        except RuntimeError:
+            pass  # the project opened; a snapshot is a bonus
+        return "Opened project"
+
+    def handle_ping(self, command):
+        document = Krita.instance().activeDocument()
+        title = (document.fileName() or "Untitled") if document is not None else "none"
+        return f"pong (protocol {core.PROTOCOL_VERSION}, Krita {Krita.instance().version()}, active: {title})"
+
+    # --- project list -------------------------------------------------------
 
     def export_open_projects_if_needed(self):
         now = time.monotonic()
         if now - self._last_project_export < 5.0:
             return
         self._last_project_export = now
-        self.export_open_projects()
-
-    def export_open_projects(self):
         try:
-            active = Krita.instance().activeDocument()
-            projects = []
-            for document in Krita.instance().documents():
-                filename = document.fileName() or ""
-                title = Path(filename).name if filename else "Untitled"
-                projects.append({
-                    "document": filename,
-                    "title": title,
-                    "width": int(document.width()),
-                    "height": int(document.height()),
-                    "active": document == active,
-                })
-            tmp = OPEN_PROJECTS.with_suffix(".tmp.json")
-            tmp.write_text(json.dumps({
-                "updated_at": datetime.datetime.now().isoformat(timespec="seconds"),
-                "projects": projects,
-            }, indent=2, sort_keys=True))
-            tmp.replace(OPEN_PROJECTS)
-        except Exception as exc:
+            self.export_open_projects()
+        except Exception as exc:  # noqa: BLE001
             self.last_status = "Project list error: " + str(exc)
 
+    def export_open_projects(self):
+        app = Krita.instance()
+        active = app.activeDocument()
+        projects = []
+        for document in app.documents():
+            filename = document.fileName() or ""
+            projects.append({
+                "document": filename,
+                "title": Path(filename).name if filename else "Untitled",
+                "width": int(document.width()),
+                "height": int(document.height()),
+                "active": document == active,
+            })
+        core.atomic_write_json(PATHS.projects, {"updated_at": core.timestamp(), "projects": projects})
+
+    # --- canvas export ------------------------------------------------------
+
     def export_latest_canvas(self, max_side=1024):
+        """Save a PNG snapshot of the active canvas; raises RuntimeError on failure."""
         document = Krita.instance().activeDocument()
         if document is None:
-            self.last_status = "No active document"
-            return
+            raise RuntimeError("No active document")
 
-        try:
-            width = int(document.width())
-            height = int(document.height())
-            max_side = int(max_side)
-            scale = min(1.0, float(max_side) / float(max(width, height)))
-            thumb_width = max(1, int(width * scale))
-            thumb_height = max(1, int(height * scale))
+        document.refreshProjection()
+        width, height = int(document.width()), int(document.height())
+        thumb_width, thumb_height = core.fit_within(width, height, max_side)
+
+        image = None
+        if document.colorModel() == "RGBA" and document.colorDepth() == "U8":
             raw = bytes(document.pixelData(0, 0, width, height))
-            if len(raw) != width * height * 4:
-                self.last_status = "Canvas pixel read failed"
-                return
-            image = QImage(raw, width, height, QImage.Format_ARGB32).copy()
-            if scale < 1.0:
-                image = image.scaled(
-                    thumb_width,
-                    thumb_height,
-                    Qt.KeepAspectRatio,
-                    Qt.SmoothTransformation,
-                )
-            if image is None or image.isNull():
-                self.last_status = "Canvas image failed"
-                return
+            if len(raw) == width * height * 4:
+                # Native BGRA bytes == QImage ARGB32 on little-endian machines.
+                image = QImage(raw, width, height, width * 4, QImage.Format_ARGB32).copy()
+        if image is None or image.isNull():
+            image = document.thumbnail(width, height)
+        if image is None or image.isNull():
+            raise RuntimeError("Canvas pixel read failed")
+        if (thumb_width, thumb_height) != (width, height):
+            image = image.scaled(thumb_width, thumb_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
-            snapshot = SNAPSHOT_DIR / (datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f") + "-canvas.png")
-            tmp = snapshot.with_suffix(".tmp.png")
-            image.save(str(tmp), "PNG")
-            tmp.replace(snapshot)
+        snapshot = PATHS.snapshots / core.snapshot_name()
+        tmp = snapshot.with_name("." + snapshot.name + ".part")
+        if not image.save(str(tmp), "PNG"):
+            raise RuntimeError("Could not write snapshot PNG")
+        tmp.replace(snapshot)
+        core.atomic_write_bytes(PATHS.latest_image, snapshot.read_bytes())
+        core.prune_snapshots(PATHS)
 
-            info = {
-                "document": document.fileName() or "Untitled",
-                "preview_path": str(snapshot),
-                "width": width,
-                "height": height,
-                "preview_width": thumb_width,
-                "preview_height": thumb_height,
-                "updated_at": datetime.datetime.now().isoformat(timespec="seconds"),
-            }
-            tmp_info = LATEST_INFO.with_suffix(".tmp.json")
-            tmp_info.write_text(json.dumps(info, indent=2, sort_keys=True))
-            tmp_info.replace(LATEST_INFO)
-            self.last_status = "Streamed canvas at " + now_text()
-        except Exception as exc:
-            self.last_status = "Export error: " + str(exc)
+        info = {
+            "document": document.fileName() or "Untitled",
+            "preview_path": str(snapshot),
+            "latest_path": str(PATHS.latest_image),
+            "width": width,
+            "height": height,
+            "preview_width": image.width(),
+            "preview_height": image.height(),
+            "updated_at": core.timestamp(),
+        }
+        core.atomic_write_json(PATHS.latest_info, info)
+        self.last_status = "Exported canvas at " + now_text()
+        return info
 
-    def process_commands(self):
-        ensure_dirs()
-        for command_path in sorted(COMMAND_DIR.glob("*.json")):
-            command = {}
-            try:
-                command = json.loads(command_path.read_text())
-                action = command.get("action")
-                if action == "insert_image":
-                    scale = float(command.get("scale", 1.0) or 1.0)
-                    self.insert_image(
-                        Path(command.get("path", "")).expanduser(),
-                        command.get("name") or "AI result",
-                        scale,
-                    )
-                    self.finish_command(command_path, command, "succeeded", "Inserted image")
-                    self.last_status = "Inserted image at " + now_text()
-                elif action == "export_canvas":
-                    self.export_latest_canvas(command.get("max_side", 1024))
-                    self.export_open_projects()
-                    self.finish_command(command_path, command, "succeeded", "Captured canvas")
-                    self.last_status = "Captured canvas at " + now_text()
-                elif action == "open_project":
-                    self.open_project(Path(command.get("path", "")).expanduser())
-                    self.export_latest_canvas(command.get("max_side", 1024))
-                    self.export_open_projects()
-                    self.finish_command(command_path, command, "succeeded", "Opened project")
-                    self.last_status = "Opened project at " + now_text()
-                else:
-                    self.finish_command(command_path, command, "ignored", "Unknown action")
-            except Exception as exc:
-                command["status"] = "failed"
-                command["error"] = str(exc)
-                command["completed_at"] = datetime.datetime.now().isoformat(timespec="seconds")
-                error_path = command_path.with_suffix(".error.json")
-                error_path.write_text(json.dumps(command, indent=2, sort_keys=True))
-                try:
-                    command_path.unlink()
-                except Exception:
-                    pass
-                self.last_status = "Command error: " + str(exc)
-
-    def finish_command(self, command_path, command, status, message):
-        command["status"] = status
-        command["message"] = message
-        command["completed_at"] = datetime.datetime.now().isoformat(timespec="seconds")
-        done_path = DONE_DIR / command_path.name
-        done_path.write_text(json.dumps(command, indent=2, sort_keys=True))
-        command_path.unlink()
+    # --- insert / open ------------------------------------------------------
 
     def insert_image(self, image_path, layer_name, scale=1.0):
-        if not image_path.exists():
+        if not image_path.is_file():
             raise FileNotFoundError(str(image_path))
 
         image = QImage(str(image_path))
         if image.isNull():
             raise RuntimeError("Could not decode image: " + str(image_path))
-        scale = max(0.05, min(float(scale), 1.0))
         if scale < 1.0:
             image = image.scaled(
                 max(1, int(image.width() * scale)),
@@ -215,97 +186,65 @@ class BridgeSync:
                 Qt.KeepAspectRatio,
                 Qt.SmoothTransformation,
             )
-        if image.format() != QImage.Format_RGBA8888:
-            image = image.convertToFormat(QImage.Format_RGBA8888)
+        image = image.convertToFormat(QImage.Format_RGBA8888)
+        width, height = image.width(), image.height()
 
-        document = Krita.instance().activeDocument()
+        app = Krita.instance()
+        document = app.activeDocument()
         if document is None:
-            document = Krita.instance().createDocument(
-                image.width(),
-                image.height(),
-                "AI Result",
-                "RGBA",
-                "U8",
-                "",
-                300.0,
-            )
-            Krita.instance().activeWindow().addView(document)
+            document = app.createDocument(width, height, "AI Result", "RGBA", "U8", "", 300.0)
+            window = app.activeWindow()
+            if window is not None:
+                window.addView(document)
 
         layer = document.createNode(layer_name, "paintLayer")
         document.rootNode().addChildNode(layer, None)
 
-        ptr = image.bits()
-        ptr.setsize(image.byteCount())
-        rgba = bytes(ptr)
-        bgra = bytearray(rgba)
-        bgra[0::4] = rgba[2::4]
-        bgra[2::4] = rgba[0::4]
-        layer.setPixelData(QByteArray(bytes(bgra)), 0, 0, image.width(), image.height())
+        ptr = image.constBits()
+        ptr.setsize(image.bytesPerLine() * height)
+        raw = bytes(ptr)
+        stride, row = image.bytesPerLine(), width * 4
+        if stride != row:
+            raw = b"".join(raw[y * stride:y * stride + row] for y in range(height))
+        # Krita's native byte order is BGRA; skipping this swaps red and blue.
+        layer.setPixelData(QByteArray(core.rgba_to_bgra(raw)), 0, 0, width, height)
         document.refreshProjection()
 
     def open_project(self, project_path):
         if not project_path.exists():
             raise FileNotFoundError(str(project_path))
 
-        requested = str(project_path.resolve())
+        requested = project_path.resolve()
+        app = Krita.instance()
         document = None
-        for open_document in Krita.instance().documents():
+        for open_document in app.documents():
             filename = open_document.fileName() or ""
-            if not filename:
-                continue
-            try:
-                if str(Path(filename).expanduser().resolve()) == requested:
-                    document = open_document
-                    break
-            except Exception:
-                if filename == str(project_path):
-                    document = open_document
-                    break
+            if filename and Path(filename).expanduser().resolve() == requested:
+                document = open_document
+                break
 
         if document is None:
-            document = Krita.instance().openDocument(str(project_path))
+            document = app.openDocument(str(project_path))
         if document is None:
             raise RuntimeError("Could not open project: " + str(project_path))
 
-        self.activate_document(document)
+        try:
+            self.activate_document(document)
+        except Exception as exc:  # noqa: BLE001 - view APIs vary across Krita versions
+            self.last_status = "Opened, but could not focus the view: " + str(exc)
         document.refreshProjection()
 
     def activate_document(self, document):
         app = Krita.instance()
         window = app.activeWindow()
         if window is not None:
-            try:
-                window.activate()
-            except Exception:
-                pass
-
-            visible = False
-            try:
-                for view in window.views():
-                    if view.document() == document:
-                        try:
-                            view.setVisible()
-                        except Exception:
-                            pass
-                        try:
-                            window.showView(view)
-                        except Exception:
-                            pass
-                        visible = True
-                        break
-            except Exception:
-                pass
-
-            if not visible:
-                try:
-                    window.addView(document)
-                except Exception:
-                    pass
-
-        try:
-            app.setActiveDocument(document)
-        except Exception:
-            pass
+            window.activate()
+            view = next((v for v in window.views() if v.document() == document), None)
+            if view is not None:
+                window.showView(view)
+            else:
+                window.addView(document)
+        app.setActiveDocument(document)
 
 
 SYNC = BridgeSync()
@@ -316,12 +255,17 @@ class KritaImageUploaderExtension(Extension):
         super().__init__(parent)
         self.command_timer = QTimer()
         self.command_timer.timeout.connect(SYNC.tick_commands)
+        # Live canvas streaming: a no-op unless state.json has
+        # {"live_canvas_preview": true}.
+        self.canvas_timer = QTimer()
+        self.canvas_timer.timeout.connect(SYNC.tick_canvas)
 
     def setup(self):
-        ensure_dirs()
+        PATHS.ensure()
         clear_preview_locks()
         self.command_timer.start(500)
-        SYNC.last_status = "Auto import ready. Live canvas export is off."
+        self.canvas_timer.start(2000)
+        SYNC.last_status = "Bridge ready — watching " + str(PATHS.commands)
 
     def createActions(self, window):
         pass
@@ -335,7 +279,7 @@ class KritaImageUploaderDocker(DockWidget):
 
         root = QWidget()
         layout = QVBoxLayout(root)
-        self.status_label = QLabel("Background sync disabled. Use buttons here when needed.")
+        self.status_label = QLabel(SYNC.last_status)
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
@@ -343,7 +287,7 @@ class KritaImageUploaderDocker(DockWidget):
         export_button.clicked.connect(self.export_now)
         layout.addWidget(export_button)
 
-        insert_button = QPushButton("Insert Queued Images")
+        insert_button = QPushButton("Process Queued Commands")
         insert_button.clicked.connect(self.insert_now)
         layout.addWidget(insert_button)
 
@@ -358,7 +302,10 @@ class KritaImageUploaderDocker(DockWidget):
         self.refresh_status()
 
     def export_now(self):
-        SYNC.export_latest_canvas()
+        try:
+            SYNC.export_latest_canvas()
+        except Exception as exc:  # noqa: BLE001
+            SYNC.last_status = "Export error: " + str(exc)
         self.refresh_status()
 
     def insert_now(self):
